@@ -509,6 +509,125 @@ class TestAnthropicChatFormatterFormatter(IsolatedAsyncioTestCase):
         res = await formatter.format([])
         self.assertListEqual(res, [])
 
+    async def test_chat_formatter_uses_empty_string_for_none_tool_result(
+        self,
+    ) -> None:
+        """Test that None tool result does not emit invalid text null."""
+        formatter = AnthropicChatFormatter()
+        res = await formatter.format(
+            [
+                Msg(
+                    "assistant",
+                    [
+                        ToolUseBlock(
+                            type="tool_use",
+                            id="1",
+                            name="void_tool",
+                            input={},
+                        ),
+                    ],
+                    "assistant",
+                ),
+                Msg(
+                    "system",
+                    [
+                        ToolResultBlock(
+                            type="tool_result",
+                            id="1",
+                            name="void_tool",
+                            output=None,  # type: ignore[arg-type]
+                        ),
+                    ],
+                    "system",
+                ),
+            ],
+        )
+
+        tool_result = res[1]["content"][0]
+        self.assertEqual(tool_result["type"], "tool_result")
+        self.assertEqual(tool_result["tool_use_id"], "1")
+        self.assertEqual(tool_result["content"], "")
+
+    async def test_chat_formatter_merges_adjacent_tool_results(
+        self,
+    ) -> None:
+        """Test that parallel tool results are sent in one user message."""
+        formatter = AnthropicChatFormatter()
+        res = await formatter.format(
+            [
+                Msg(
+                    "assistant",
+                    [
+                        ToolUseBlock(
+                            type="tool_use",
+                            id="1",
+                            name="get_capital",
+                            input={"country": "Japan"},
+                        ),
+                        ToolUseBlock(
+                            type="tool_use",
+                            id="2",
+                            name="get_capital",
+                            input={"country": "South Korea"},
+                        ),
+                    ],
+                    "assistant",
+                ),
+                Msg(
+                    "system",
+                    [
+                        ToolResultBlock(
+                            type="tool_result",
+                            id="1",
+                            name="get_capital",
+                            output="The capital of Japan is Tokyo.",
+                        ),
+                    ],
+                    "system",
+                ),
+                Msg(
+                    "system",
+                    [
+                        ToolResultBlock(
+                            type="tool_result",
+                            id="2",
+                            name="get_capital",
+                            output="The capital of South Korea is Seoul.",
+                        ),
+                    ],
+                    "system",
+                ),
+            ],
+        )
+
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[1]["role"], "user")
+        self.assertEqual(
+            res[1]["content"],
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "1",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The capital of Japan is Tokyo.",
+                        },
+                    ],
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "2",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The capital of South Korea is Seoul.",
+                        },
+                    ],
+                },
+            ],
+        )
+
     async def test_multiagent_formater(self) -> None:
         """Test the multi-agent formatter."""
         formatter = AnthropicMultiAgentFormatter()

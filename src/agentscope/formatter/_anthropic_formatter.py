@@ -95,6 +95,84 @@ def _format_anthropic_image_block(image_block: ImageBlock) -> dict:
     )
 
 
+def _format_anthropic_tool_result_block(
+    tool_result_block: ToolResultBlock,
+) -> dict:
+    """Format a tool result block for Anthropic API."""
+    output = tool_result_block.get("output")
+    content_value: str | list[dict]
+
+    if output is None:
+        content_value = ""
+    elif isinstance(output, list):
+        content_value = [
+            _format_anthropic_image_block(item)
+            if item.get("type") == "image"
+            else item
+            for item in output
+        ] or ""
+    else:
+        output_text = str(output)
+        content_value = (
+            [{"type": "text", "text": output_text}] if output_text else ""
+        )
+
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_result_block.get("id"),
+        "content": content_value,
+    }
+
+
+def _merge_adjacent_tool_result_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge adjacent tool results as Anthropic requires for parallel tools."""
+    merged_messages: list[dict[str, Any]] = []
+    tool_result_blocks: list[dict[str, Any]] = []
+
+    for message in messages:
+        if _is_tool_result_only_user_message(message):
+            tool_result_blocks.extend(message["content"])
+            continue
+
+        if tool_result_blocks:
+            merged_messages.append(
+                {
+                    "role": "user",
+                    "content": tool_result_blocks,
+                },
+            )
+            tool_result_blocks = []
+
+        merged_messages.append(message)
+
+    if tool_result_blocks:
+        merged_messages.append(
+            {
+                "role": "user",
+                "content": tool_result_blocks,
+            },
+        )
+
+    return merged_messages
+
+
+def _is_tool_result_only_user_message(message: dict[str, Any]) -> bool:
+    """Whether the message contains only Anthropic tool result blocks."""
+    if message.get("role") != "user":
+        return False
+
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+
+    return all(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
 class AnthropicChatFormatter(TruncatedFormatterBase):
     """The Anthropic formatter class for chatbot scenario, where only a user
     and an agent are involved. We use the `role` field to identify different
@@ -169,27 +247,13 @@ class AnthropicChatFormatter(TruncatedFormatterBase):
                     )
 
                 elif typ == "tool_result":
-                    output = block.get("output")
-                    if output is None:
-                        content_value = [{"type": "text", "text": None}]
-                    elif isinstance(output, list):
-                        content_value = [
-                            _format_anthropic_image_block(item)
-                            if item.get("type") == "image"
-                            else item
-                            for item in output
-                        ]
-                    else:
-                        content_value = [{"type": "text", "text": str(output)}]
                     messages.append(
                         {
                             "role": "user",
                             "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": block.get("id"),
-                                    "content": content_value,
-                                },
+                                _format_anthropic_tool_result_block(
+                                    block,  # type: ignore[arg-type]
+                                ),
                             ],
                         },
                     )
@@ -214,7 +278,7 @@ class AnthropicChatFormatter(TruncatedFormatterBase):
             if msg_anthropic["content"] or msg_anthropic.get("tool_calls"):
                 messages.append(msg_anthropic)
 
-        return messages
+        return _merge_adjacent_tool_result_messages(messages)
 
 
 class AnthropicMultiAgentFormatter(TruncatedFormatterBase):
